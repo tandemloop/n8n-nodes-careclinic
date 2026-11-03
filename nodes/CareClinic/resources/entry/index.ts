@@ -1,4 +1,11 @@
-import type { INodeProperties } from 'n8n-workflow';
+import { createHash, randomUUID } from 'crypto';
+import { NodeConnectionTypes } from 'n8n-workflow';
+import type {
+	IDataObject,
+	IExecuteSingleFunctions,
+	INodeProperties,
+	IHttpRequestOptions,
+} from 'n8n-workflow';
 
 const showForCreate = { resource: ['entry'], operation: ['create'] };
 const showForDomain = (domain: string) => ({
@@ -9,6 +16,93 @@ const showForDomain = (domain: string) => ({
 const body = (property: string) => ({ send: { type: 'body' as const, property } });
 // The gateway requires an offset. The n8n date picker can return local time without one.
 const withOffset = '={{ DateTime.fromISO(String($value)).toISO({ suppressMilliseconds: true }) }}';
+const defaultIdempotencyKey = '={{[$nodeId, $execution.id, $runIndex, $itemIndex].join(":")}}';
+const legacyIdempotencyKey = '={{$execution.id}}-{{$itemIndex}}';
+const defaultOccurredAt =
+	'={{ $parameter.domain === "medication" ? $json.scheduledAt : $now.toISO() }}';
+const legacyOccurredAt = '={{$now.toISO()}}';
+const toolInvocations = new WeakMap<object, string>();
+
+function invocationId(this: IExecuteSingleFunctions): string | number {
+	if (this.getNode().type.endsWith('.careClinicTool')) {
+		// n8n retries a tool call with the same arguments object but a new run index.
+		const input = this.getInputData(0, NodeConnectionTypes.AiTool);
+		// Without an ai_tool connection n8n returns a fresh empty item per call.
+		// Engine tools use main input and a stable run index, including after resume.
+		if (input !== this.getInputData(0, NodeConnectionTypes.AiTool)) {
+			return this.getWorkflowDataProxy(this.getItemIndex()).$runIndex;
+		}
+		const args = input.json;
+		let id = toolInvocations.get(args);
+		if (id === undefined) {
+			id = randomUUID();
+			toolInvocations.set(args, id);
+		}
+		return id;
+	}
+	return this.getWorkflowDataProxy(this.getItemIndex()).$runIndex;
+}
+
+function prepareEntryRequest(
+	this: IExecuteSingleFunctions,
+	request: IHttpRequestOptions,
+): Promise<IHttpRequestOptions> {
+	const raw = this.getNode().parameters.idempotencyKey;
+	const invocation = invocationId.call(this);
+	let key: string;
+	if (raw === undefined || raw === defaultIdempotencyKey || raw === legacyIdempotencyKey) {
+		// Execution context survives retries and waiting executions. Unlike instance IDs,
+		// this salt is also distinct on installs sharing an encryption key or imported IDs.
+		const context = this.getContext('node');
+		if (context.careClinicIdempotencySalt === undefined) {
+			context.careClinicIdempotencySalt = randomUUID();
+		}
+		key =
+			'n8n:' +
+			createHash('sha256')
+				.update(
+					JSON.stringify([
+						context.careClinicIdempotencySalt,
+						this.getInstanceId?.(),
+						this.getWorkflow().id,
+						this.getNode().id,
+						this.getExecutionId(),
+						invocation,
+						this.getItemIndex(),
+					]),
+				)
+				.digest('hex');
+	} else {
+		key = this.getNodeParameter('idempotencyKey') as string;
+	}
+	request.headers = { ...request.headers };
+	if (key === '') delete request.headers['Idempotency-Key'];
+	else request.headers['Idempotency-Key'] = key;
+	const rawTime = this.getNode().parameters.occurredAt;
+	if (rawTime === undefined || rawTime === defaultOccurredAt || rawTime === legacyOccurredAt) {
+		// A retry must also repeat the payload, not re-evaluate the current time.
+		const context = this.getContext('node');
+		const times = (context.careClinicOccurredAt ??= {}) as IDataObject;
+		const domain = this.getNodeParameter('domain');
+		const coordinate = JSON.stringify([
+			this.getExecutionId(),
+			invocation,
+			this.getItemIndex(),
+			domain,
+		]);
+		if (times[coordinate] === undefined) {
+			times[coordinate] =
+				domain === 'medication'
+					? this.evaluateExpression(
+							'{{ DateTime.fromISO(String($json.scheduledAt)).toISO({ suppressMilliseconds: true }) }}',
+							this.getItemIndex(),
+						)
+					: (request.body as IDataObject).occurredAt;
+		}
+		(request.body as IDataObject).occurredAt = times[coordinate];
+	}
+	return Promise.resolve(request);
+}
 
 export const entryDescription: INodeProperties[] = [
 	{
@@ -71,7 +165,7 @@ export const entryDescription: INodeProperties[] = [
 		name: 'occurredAt',
 		type: 'dateTime',
 		required: true,
-		default: '={{$now.toISO()}}',
+		default: defaultOccurredAt,
 		description: 'When the event happened, with a time zone offset',
 		displayOptions: { show: showForCreate },
 		routing: { send: { type: 'body', property: 'occurredAt', value: withOffset } },
@@ -80,12 +174,12 @@ export const entryDescription: INodeProperties[] = [
 		displayName: 'Idempotency Key',
 		name: 'idempotencyKey',
 		type: 'string',
-		default: '={{$execution.id}}-{{$itemIndex}}',
+		default: defaultIdempotencyKey,
 		typeOptions: { maxLength: 255 },
 		description:
 			'Repeating a request with the same key and payload returns the original entry instead of a duplicate',
 		displayOptions: { show: showForCreate },
-		routing: { request: { headers: { 'Idempotency-Key': '={{$value}}' } } },
+		routing: { send: { preSend: [prepareEntryRequest] } },
 	},
 
 	// Symptom

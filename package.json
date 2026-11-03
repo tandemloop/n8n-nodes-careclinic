@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-careclinic",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Track symptoms, medications, mood, sleep and vitals to manage chronic conditions, spot triggers and share clear health reports at doctor appointments.",
   "license": "MIT",
   "homepage": "https://github.com/tandemloop/n8n-nodes-careclinic#readme",
@@ -25,6 +25,7 @@
     "dev": "n8n-node dev",
     "lint": "n8n-node lint",
     "lint:fix": "n8n-node lint --fix",
+    "test": "npm run build && node --test test/*.test.cjs",
     "release": "n8n-node release",
     "prepublishOnly": "n8n-node prerelease"
   },
