@@ -47,7 +47,12 @@ function prepareEntryRequest(
 	this: IExecuteSingleFunctions,
 	request: IHttpRequestOptions,
 ): Promise<IHttpRequestOptions> {
-	const raw = this.getNode().parameters.idempotencyKey;
+	const additionalFields = this.getNode().parameters.additionalFields as IDataObject | undefined;
+	const parameter =
+		additionalFields?.idempotencyKey !== undefined
+			? 'additionalFields.idempotencyKey'
+			: 'idempotencyKey';
+	const raw = additionalFields?.idempotencyKey ?? this.getNode().parameters.idempotencyKey;
 	const invocation = invocationId.call(this);
 	let key: string;
 	if (raw === undefined || raw === defaultIdempotencyKey || raw === legacyIdempotencyKey) {
@@ -73,7 +78,7 @@ function prepareEntryRequest(
 				)
 				.digest('hex');
 	} else {
-		key = this.getNodeParameter('idempotencyKey') as string;
+		key = this.getNodeParameter(parameter) as string;
 	}
 	request.headers = { ...request.headers };
 	if (key === '') delete request.headers['Idempotency-Key'];
@@ -117,7 +122,10 @@ export const entryDescription: INodeProperties[] = [
 				value: 'create',
 				description: 'Log a symptom, mood or medication entry',
 				action: 'Create an entry',
-				routing: { request: { method: 'POST', url: '/entries' } },
+				routing: {
+					request: { method: 'POST', url: '/entries' },
+					send: { preSend: [prepareEntryRequest] },
+				},
 			},
 			{
 				name: 'Get Many',
@@ -170,16 +178,13 @@ export const entryDescription: INodeProperties[] = [
 		displayOptions: { show: showForCreate },
 		routing: { send: { type: 'body', property: 'occurredAt', value: withOffset } },
 	},
+	// Keep saved 0.1.x workflow values through n8n's parameter normalisation.
 	{
 		displayName: 'Idempotency Key',
 		name: 'idempotencyKey',
-		type: 'string',
+		type: 'hidden',
 		default: defaultIdempotencyKey,
-		typeOptions: { maxLength: 255 },
-		description:
-			'Repeating a request with the same key and payload returns the original entry instead of a duplicate',
 		displayOptions: { show: showForCreate },
-		routing: { send: { preSend: [prepareEntryRequest] } },
 	},
 
 	// Symptom
@@ -310,6 +315,15 @@ export const entryDescription: INodeProperties[] = [
 				typeOptions: { minValue: 0, maxValue: 10, numberPrecision: 0 },
 				description: 'Mood entries only',
 				routing: body('energy'),
+			},
+			{
+				displayName: 'Idempotency Key',
+				name: 'idempotencyKey',
+				type: 'string',
+				default: defaultIdempotencyKey,
+				typeOptions: { maxLength: 255 },
+				description:
+					'Repeating a request with the same key and payload returns the original entry instead of a duplicate',
 			},
 			{
 				displayName: 'Mood Label',

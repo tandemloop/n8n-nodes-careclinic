@@ -41,7 +41,7 @@ The credential requests `careclinic.wellness.read`, `careclinic.symptoms.write`,
 * **Log a dose:** run **Reminder > Get Today**, then **Entry > Create** with domain `medication`, using `medicationId`, `medicationName`, `reminderId`, `reminderIndex` and `scheduledAt` (as Occurred At) from the chosen dose.
 * **React to new entries:** schedule **Entry > Get Many** with a Since time, for example the last run time.
 
-Create requests send an `Idempotency-Key` header (default: execution ID and item index), so retrying the same item returns the original entry instead of a duplicate.
+Create requests send an `Idempotency-Key` header scoped to the workflow, node, execution, invocation and item. The automatic key and timestamp stay stable on retries. To override the key, add **Idempotency Key** under **Entry > Create > Additional Fields**. Existing workflows keep saved keys until a key is added there. An explicitly empty key omits the header.
 
 ## Compatibility
 

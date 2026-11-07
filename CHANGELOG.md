@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2
+
+- Move the optional Idempotency Key into Additional Fields and prepare Create requests at the operation level, including when no optional fields are selected.
+- Preserve saved 0.1.x keys, automatic retry keys and timestamps. An explicitly added Additional Fields key takes precedence over the saved top-level value.
+
 ## 0.1.1
 
 - Scope automatic idempotency keys to each workflow, node, execution, invocation and item with an execution salt. Preserve the key and automatic timestamp during retries.

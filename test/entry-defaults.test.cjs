@@ -22,6 +22,7 @@ function context(overrides = {}) {
 	for (const p of nodeType.description.properties)
 		if (p.default !== undefined && parameters[p.name] === undefined) parameters[p.name] = p.default;
 	if ('rawKey' in o) parameters.idempotencyKey = o.rawKey;
+	if ('additionalFields' in o) parameters.additionalFields = o.additionalFields;
 	if ('occurredAt' in o) parameters.occurredAt = o.occurredAt;
 	const node = {
 		id: o.node,
@@ -80,7 +81,8 @@ function context(overrides = {}) {
 				keys,
 			).getDataProxy(),
 		getNodeParameter: (name, fallback, opts) => {
-			const raw = parameters[name] === undefined ? fallback : parameters[name];
+			const value = name.split('.').reduce((value, key) => value?.[key], parameters);
+			const raw = value === undefined ? fallback : value;
 			return opts?.rawExpressions ? raw : resolve(raw);
 		},
 		resolve,
@@ -91,7 +93,7 @@ function context(overrides = {}) {
 
 async function request(ctx) {
 	const options = { headers: {}, body: {} };
-	for (const name of ['occurredAt', 'idempotencyKey']) {
+	for (const name of ['occurredAt']) {
 		const p = property(name);
 		const routing = p.routing;
 		const value = ctx.getNodeParameter(name);
@@ -104,6 +106,10 @@ async function request(ctx) {
 			});
 		for (const preSend of routing?.send?.preSend || []) await preSend.call(ctx, options);
 	}
+	const create = nodeType.description.properties
+		.find((p) => p.name === 'operation' && p.displayOptions.show.resource.includes('entry'))
+		.options.find((o) => o.value === 'create');
+	for (const preSend of create.routing.send.preSend) await preSend.call(ctx, options);
 	return options;
 }
 const key = async (c) => (await request(c)).headers['Idempotency-Key'];
@@ -261,11 +267,59 @@ test('symptom and mood default keep current time, explicit medication time is pr
 test('AI tool support and all approved field text stay unchanged', () => {
 	assert.equal(nodeType.description.usableAsTool, true);
 	assert.equal(
-		property('idempotencyKey').description,
+		property('additionalFields').options.find((p) => p.name === 'idempotencyKey').description,
 		'Repeating a request with the same key and payload returns the original entry instead of a duplicate',
 	);
 	assert.equal(
 		property('occurredAt').description,
 		'When the event happened, with a time zone offset',
 	);
+});
+
+test('N1 Idempotency Key is optional inside Additional Fields, not a top-level UI field', () => {
+	assert.equal(
+		nodeType.description.properties.some((p) => p.name === 'idempotencyKey' && p.type !== 'hidden'),
+		false,
+	);
+	const field = property('additionalFields').options.find((p) => p.name === 'idempotencyKey');
+	assert.equal(field.type, 'string');
+	assert.equal(field.displayName, 'Idempotency Key');
+	assert.equal(field.typeOptions.maxLength, 255);
+	const create = nodeType.description.properties
+		.find((p) => p.name === 'operation' && p.displayOptions.show.resource.includes('entry'))
+		.options.find((o) => o.value === 'create');
+	assert.equal(create.routing.send.preSend.length, 1);
+	assert.equal(field.routing, undefined);
+	assert.equal(property('idempotencyKey').routing, undefined);
+});
+test('N1 Additional Fields custom key overrides saved top-level key', async () => {
+	assert.equal(
+		await key(context({ rawKey: 'old', additionalFields: { idempotencyKey: 'new' } })),
+		'new',
+	);
+	assert.equal(
+		await key(
+			context({
+				additionalFields: { idempotencyKey: '={{$json.id}}' },
+				json: { id: 'incoming-123' },
+			}),
+		),
+		'incoming-123',
+	);
+});
+test('N1 Additional Fields literal and evaluated empty key omit the header', async () => {
+	for (const value of ['', '={{""}}']) {
+		assert.equal(
+			await key(context({ rawKey: 'old', additionalFields: { idempotencyKey: value } })),
+			undefined,
+		);
+	}
+});
+
+test('N1 adding the nested default switches a saved custom key back to automatic', async () => {
+	const field = property('additionalFields').options.find((p) => p.name === 'idempotencyKey');
+	const c = context({ rawKey: 'old-custom', additionalFields: { idempotencyKey: field.default } });
+	const generated = await key(c);
+	assert.match(generated, /^n8n:[a-f0-9]{64}$/);
+	assert.equal(await key(c), generated);
 });
